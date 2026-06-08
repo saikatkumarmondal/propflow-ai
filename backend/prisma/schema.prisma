@@ -1,0 +1,488 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  PROPERTY_OWNER
+  PROPERTY_MANAGER
+  LEASING_AGENT
+  ACCOUNTANT
+  MAINTENANCE_MANAGER
+  TECHNICIAN
+  TENANT
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+}
+
+enum PropertyType {
+  RESIDENTIAL
+  COMMERCIAL
+  MIXED_USE
+}
+
+enum UnitStatus {
+  VACANT
+  OCCUPIED
+  MAINTENANCE
+  RESERVED
+}
+
+enum LeaseStatus {
+  ACTIVE
+  EXPIRED
+  TERMINATED
+  PENDING
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  STRIPE
+  BKASH
+  NAGAD
+  SSLCOMMERZ
+  CASH
+  BANK_TRANSFER
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  VISIT_SCHEDULED
+  NEGOTIATION
+  WON
+  LOST
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  PUSH
+  IN_APP
+}
+
+enum SubscriptionPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+// ─────────────────────────────────────────
+// ORGANIZATIONS
+// ─────────────────────────────────────────
+
+model Organization {
+  id               String           @id @default(uuid())
+  name             String
+  slug             String           @unique
+  logo             String?
+  email            String           @unique
+  phone            String?
+  address          String?
+  website          String?
+  status           OrgStatus        @default(TRIAL)
+  subscriptionPlan SubscriptionPlan @default(FREE)
+  subscriptionEndsAt DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  users            User[]
+  properties       Property[]
+  tenants          Tenant[]
+  invoices         Invoice[]
+  maintenanceRequests MaintenanceRequest[]
+  leads            Lead[]
+  notifications    Notification[]
+  aiConversations  AiConversation[]
+  auditLogs        AuditLog[]
+
+  @@map("organizations")
+}
+
+// ─────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────
+
+model User {
+  id                    String     @id @default(uuid())
+  organizationId        String?
+  email                 String     @unique
+  passwordHash          String
+  firstName             String
+  lastName              String
+  phone                 String?
+  avatar                String?
+  role                  UserRole   @default(TENANT)
+  status                UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt       DateTime?
+  emailVerificationToken String?
+  passwordResetToken    String?
+  passwordResetExpiresAt DateTime?
+  mfaEnabled            Boolean    @default(false)
+  mfaSecret             String?
+  lastLoginAt           DateTime?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  organization          Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  refreshTokens         RefreshToken[]
+  tenantProfile         Tenant?
+  assignedMaintenances  MaintenanceRequest[] @relation("AssignedTechnician")
+  managedMaintenances   MaintenanceRequest[] @relation("MaintenanceManager")
+  aiConversations       AiConversation[]
+  auditLogs             AuditLog[]
+  notifications         Notification[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────
+// PROPERTIES
+// ─────────────────────────────────────────
+
+model Property {
+  id             String       @id @default(uuid())
+  organizationId String
+  name           String
+  slug           String
+  type           PropertyType @default(RESIDENTIAL)
+  address        String
+  city           String
+  state          String?
+  country        String       @default("Bangladesh")
+  postalCode     String?
+  latitude       Decimal?     @db.Decimal(10, 8)
+  longitude      Decimal?     @db.Decimal(11, 8)
+  description    String?
+  images         String[]
+  documents      String[]
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  buildings      Building[]
+  units          Unit[]
+
+  @@unique([organizationId, slug])
+  @@map("properties")
+}
+
+model Building {
+  id          String   @id @default(uuid())
+  propertyId  String
+  name        String
+  totalFloors Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floors      Floor[]
+
+  @@map("buildings")
+}
+
+model Floor {
+  id         String   @id @default(uuid())
+  buildingId String
+  floorNumber Int
+  name        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  building   Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  units      Unit[]
+
+  @@map("floors")
+}
+
+model Unit {
+  id           String     @id @default(uuid())
+  propertyId   String
+  floorId      String?
+  unitNumber   String
+  unitType     String?
+  sizeSqft     Decimal?   @db.Decimal(10, 2)
+  bedrooms     Int?
+  bathrooms    Int?
+  rentAmount   Decimal    @db.Decimal(12, 2)
+  currency     String     @default("BDT")
+  status       UnitStatus @default(VACANT)
+  amenities    String[]
+  images       String[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  property     Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floor        Floor?   @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  leases       Lease[]
+  maintenanceRequests MaintenanceRequest[]
+
+  @@map("units")
+}
+
+// ─────────────────────────────────────────
+// TENANTS & LEASES
+// ─────────────────────────────────────────
+
+model Tenant {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String   @unique
+  nidNumber      String?
+  nidDocument    String?
+  emergencyContact String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leases         Lease[]
+
+  @@map("tenants")
+}
+
+model Lease {
+  id              String      @id @default(uuid())
+  tenantId        String
+  unitId          String
+  startDate       DateTime
+  endDate         DateTime
+  rentAmount      Decimal     @db.Decimal(12, 2)
+  securityDeposit Decimal     @db.Decimal(12, 2)
+  status          LeaseStatus @default(PENDING)
+  agreementDocument String?
+  terms           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit            Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  invoices        Invoice[]
+
+  @@map("leases")
+}
+
+// ─────────────────────────────────────────
+// BILLING
+// ─────────────────────────────────────────
+
+model Invoice {
+  id             String        @id @default(uuid())
+  organizationId String
+  leaseId        String?
+  tenantId       String?
+  invoiceNumber  String        @unique
+  amount         Decimal       @db.Decimal(12, 2)
+  tax            Decimal       @db.Decimal(12, 2) @default(0)
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  currency       String        @default("BDT")
+  status         InvoiceStatus @default(PENDING)
+  dueDate        DateTime
+  paidAt         DateTime?
+  description    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lease          Lease?       @relation(fields: [leaseId], references: [id], onDelete: SetNull)
+  payments       Payment[]
+
+  @@map("invoices")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  invoiceId       String
+  amount          Decimal       @db.Decimal(12, 2)
+  currency        String        @default("BDT")
+  paymentMethod   PaymentMethod
+  transactionId   String?       @unique
+  gatewayResponse Json?
+  paidAt          DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+
+  invoice         Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────
+// MAINTENANCE
+// ─────────────────────────────────────────
+
+model MaintenanceRequest {
+  id              String              @id @default(uuid())
+  organizationId  String
+  unitId          String
+  requestedById   String?
+  assignedToId    String?
+  managedById     String?
+  title           String
+  description     String
+  priority        MaintenancePriority @default(MEDIUM)
+  status          MaintenanceStatus   @default(OPEN)
+  completionNotes String?
+  completionImages String[]
+  scheduledAt     DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  unit            Unit         @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  assignedTo      User?        @relation("AssignedTechnician", fields: [assignedToId], references: [id], onDelete: SetNull)
+  managedBy       User?        @relation("MaintenanceManager", fields: [managedById], references: [id], onDelete: SetNull)
+
+  @@map("maintenance_requests")
+}
+
+// ─────────────────────────────────────────
+// CRM
+// ─────────────────────────────────────────
+
+model Lead {
+  id             String     @id @default(uuid())
+  organizationId String
+  name           String
+  email          String?
+  phone          String?
+  source         String?
+  propertyId     String?
+  status         LeadStatus @default(NEW)
+  notes          String?
+  expectedBudget Decimal?   @db.Decimal(12, 2)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("leads")
+}
+
+// ─────────────────────────────────────────
+// AI
+// ─────────────────────────────────────────
+
+model AiConversation {
+  id             String   @id @default(uuid())
+  organizationId String
+  userId         String
+  title          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages       AiMessage[]
+
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String   @id @default(uuid())
+  conversationId String
+  role           String   // "user" | "assistant"
+  content        String
+  tokensUsed     Int?
+  createdAt      DateTime @default(now())
+
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_messages")
+}
+
+// ─────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────
+
+model Notification {
+  id             String              @id @default(uuid())
+  organizationId String
+  userId         String
+  title          String
+  body           String
+  channel        NotificationChannel @default(IN_APP)
+  isRead         Boolean             @default(false)
+  metadata       Json?
+  createdAt      DateTime            @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOGS
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String?
+  userId         String?
+  action         String
+  entity         String
+  entityId       String?
+  oldValues      Json?
+  newValues      Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}

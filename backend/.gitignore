@@ -1,0 +1,5 @@
+# E:\propflow-ai\backend\.gitignore
+node_modules/
+dist/
+.env
+*.log
