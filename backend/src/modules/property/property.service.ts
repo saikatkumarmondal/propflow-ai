@@ -1,8 +1,10 @@
 // backend/src/modules/property/property.service.ts
 import slugify from "slugify";
 import crypto from "crypto";
+import { UnitStatus, PropertyType } from "@prisma/client";
 import { prisma } from "../../config/database";
 import { createAuditLog } from "../../utils/auditLog";
+import { parseQuery, buildResponse, ParsedQuery } from "../../utils/queryBuilder";
 import {
   CreatePropertyInput,
   UpdatePropertyInput,
@@ -29,8 +31,8 @@ export class PropertyService {
         ...input,
         slug,
         organizationId,
-        latitude: input.latitude ? input.latitude : undefined,
-        longitude: input.longitude ? input.longitude : undefined,
+        latitude: input.latitude ?? undefined,
+        longitude: input.longitude ?? undefined,
       },
     });
 
@@ -46,20 +48,31 @@ export class PropertyService {
     return property;
   }
 
-  async getProperties(organizationId: string) {
-    return prisma.property.findMany({
-      where: { organizationId, isActive: true },
-      include: {
-        _count: {
-          select: { buildings: true, units: true },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+  async getProperties(organizationId: string, query: ParsedQuery) {
+    const where = {
+      organizationId,
+      isActive: true,
+      ...query.where,
+    };
+
+    const [properties, total] = await Promise.all([
+      prisma.property.findMany({
+        where,
+        include: { _count: { select: { buildings: true, units: true } } },
+        orderBy: query.orderBy,
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.property.count({ where }),
+    ]);
+
+    return buildResponse(properties, total, query);
   }
 
   async getPropertyById(organizationId: string, propertyId: string) {
-    const property = await prisma.property.findFirst({
+    await this.resolveProperty(organizationId, propertyId);
+
+    return prisma.property.findFirst({
       where: { id: propertyId, organizationId, isActive: true },
       include: {
         buildings: {
@@ -84,18 +97,10 @@ export class PropertyService {
             },
           },
         },
-        units: {
-          where: { floorId: null },
-          orderBy: { unitNumber: "asc" },
-        },
-        _count: {
-          select: { units: true },
-        },
+        units: { where: { floorId: null }, orderBy: { unitNumber: "asc" } },
+        _count: { select: { units: true } },
       },
     });
-
-    if (!property) throw new Error("Property not found");
-    return property;
   }
 
   async updateProperty(
@@ -104,10 +109,7 @@ export class PropertyService {
     propertyId: string,
     input: UpdatePropertyInput
   ) {
-    const existing = await prisma.property.findFirst({
-      where: { id: propertyId, organizationId },
-    });
-    if (!existing) throw new Error("Property not found");
+    const existing = await this.resolveProperty(organizationId, propertyId);
 
     const updated = await prisma.property.update({
       where: { id: propertyId },
@@ -128,16 +130,14 @@ export class PropertyService {
   }
 
   async deleteProperty(organizationId: string, userId: string, propertyId: string) {
-    const existing = await prisma.property.findFirst({
-      where: { id: propertyId, organizationId },
-    });
-    if (!existing) throw new Error("Property not found");
+    await this.resolveProperty(organizationId, propertyId);
 
-    // Soft delete
-    await prisma.property.update({
-      where: { id: propertyId },
-      data: { isActive: false },
+    const activeLeases = await prisma.lease.count({
+      where: { unit: { propertyId }, status: "ACTIVE" },
     });
+    if (activeLeases > 0) throw new Error("Cannot delete property with active leases");
+
+    await prisma.property.update({ where: { id: propertyId }, data: { isActive: false } });
 
     await createAuditLog({
       organizationId,
@@ -150,6 +150,28 @@ export class PropertyService {
     return { message: "Property deleted successfully" };
   }
 
+  async getVacancySummary(organizationId: string) {
+    const units = await prisma.unit.groupBy({
+      by: ["status"],
+      where: { property: { organizationId, isActive: true } },
+      _count: { status: true },
+    });
+
+    const summary = units.reduce(
+      (acc, item) => ({ ...acc, [item.status]: item._count.status }),
+      {} as Record<string, number>
+    );
+
+    const total = Object.values(summary).reduce((a, b) => a + b, 0);
+    const occupied = summary["OCCUPIED"] ?? 0;
+
+    return {
+      summary,
+      total,
+      occupancyRate: total > 0 ? Math.round((occupied / total) * 100) : 0,
+    };
+  }
+
   // ─── Buildings ──────────────────────────────────
 
   async createBuilding(
@@ -157,64 +179,129 @@ export class PropertyService {
     propertyId: string,
     input: CreateBuildingInput
   ) {
-    await this.verifyPropertyOwnership(organizationId, propertyId);
+    await this.resolveProperty(organizationId, propertyId);
 
-    return prisma.building.create({
-      data: { ...input, propertyId },
+    const duplicate = await prisma.building.findFirst({
+      where: { propertyId, name: input.name },
     });
+    if (duplicate) throw new Error("A building with this name already exists in the property");
+
+    return prisma.building.create({ data: { ...input, propertyId } });
   }
 
-  async getBuildings(organizationId: string, propertyId: string) {
-    await this.verifyPropertyOwnership(organizationId, propertyId);
+  async getBuildings(
+    organizationId: string,
+    propertyId: string,
+    query: ParsedQuery
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
 
-    return prisma.building.findMany({
-      where: { propertyId },
-      include: {
-        _count: { select: { floors: true } },
-      },
-      orderBy: { name: "asc" },
-    });
+    const where = { propertyId, ...query.where };
+
+    const [buildings, total] = await Promise.all([
+      prisma.building.findMany({
+        where,
+        include: { _count: { select: { floors: true } } },
+        orderBy: query.orderBy,
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.building.count({ where }),
+    ]);
+
+    return buildResponse(buildings, total, query);
   }
 
-  async updateBuilding(buildingId: string, input: Partial<CreateBuildingInput>) {
-    return prisma.building.update({
-      where: { id: buildingId },
-      data: input,
-    });
+  async updateBuilding(
+    organizationId: string,
+    propertyId: string,
+    buildingId: string,
+    input: Partial<CreateBuildingInput>
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
+    await this.resolveBuilding(propertyId, buildingId);
+
+    return prisma.building.update({ where: { id: buildingId }, data: input });
   }
 
-  async deleteBuilding(buildingId: string) {
+  async deleteBuilding(
+    organizationId: string,
+    propertyId: string,
+    buildingId: string
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
+    await this.resolveBuilding(propertyId, buildingId);
+
+    const activeLeases = await prisma.lease.count({
+      where: { unit: { floor: { buildingId } }, status: "ACTIVE" },
+    });
+    if (activeLeases > 0) throw new Error("Cannot delete building with active leases");
+
     await prisma.building.delete({ where: { id: buildingId } });
-    return { message: "Building deleted" };
+    return { message: "Building deleted successfully" };
   }
 
   // ─── Floors ─────────────────────────────────────
 
-  async createFloor(buildingId: string, input: CreateFloorInput) {
-    const existing = await prisma.floor.findFirst({
+  async createFloor(
+    organizationId: string,
+    propertyId: string,
+    buildingId: string,
+    input: CreateFloorInput
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
+    await this.resolveBuilding(propertyId, buildingId);
+
+    const duplicate = await prisma.floor.findFirst({
       where: { buildingId, floorNumber: input.floorNumber },
     });
+    if (duplicate) throw new Error("Floor number already exists in this building");
 
-    if (existing) throw new Error("Floor number already exists in this building");
-
-    return prisma.floor.create({
-      data: { ...input, buildingId },
-    });
+    return prisma.floor.create({ data: { ...input, buildingId } });
   }
 
-  async getFloors(buildingId: string) {
-    return prisma.floor.findMany({
-      where: { buildingId },
-      include: {
-        _count: { select: { units: true } },
-      },
-      orderBy: { floorNumber: "asc" },
-    });
+  async getFloors(
+    organizationId: string,
+    propertyId: string,
+    buildingId: string,
+    query: ParsedQuery
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
+    await this.resolveBuilding(propertyId, buildingId);
+
+    const where = { buildingId, ...query.where };
+
+    const [floors, total] = await Promise.all([
+      prisma.floor.findMany({
+        where,
+        include: { _count: { select: { units: true } } },
+        orderBy: query.orderBy,
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.floor.count({ where }),
+    ]);
+
+    return buildResponse(floors, total, query);
   }
 
-  async deleteFloor(floorId: string) {
+  async deleteFloor(
+    organizationId: string,
+    propertyId: string,
+    buildingId: string,
+    floorId: string
+  ) {
+    await this.resolveProperty(organizationId, propertyId);
+    await this.resolveBuilding(propertyId, buildingId);
+    await this.resolveFloor(buildingId, floorId);
+
+    const activeLeases = await prisma.lease.count({
+      where: { unit: { floorId }, status: "ACTIVE" },
+    });
+    if (activeLeases > 0) throw new Error("Cannot delete floor with active leases");
+
     await prisma.floor.delete({ where: { id: floorId } });
-    return { message: "Floor deleted" };
+    return { message: "Floor deleted successfully" };
   }
 
   // ─── Units ──────────────────────────────────────
@@ -224,60 +311,72 @@ export class PropertyService {
     propertyId: string,
     input: CreateUnitInput
   ) {
-    await this.verifyPropertyOwnership(organizationId, propertyId);
+    await this.resolveProperty(organizationId, propertyId);
 
-    const existing = await prisma.unit.findFirst({
+    if (input.floorId) {
+      const floor = await prisma.floor.findUnique({ where: { id: input.floorId } });
+      if (!floor) throw new Error("Floor not found");
+
+      const building = await prisma.building.findFirst({
+        where: { id: floor.buildingId, propertyId },
+      });
+      if (!building) throw new Error("Floor does not belong to this property");
+    }
+
+    const duplicate = await prisma.unit.findFirst({
       where: { propertyId, unitNumber: input.unitNumber },
     });
-    if (existing) throw new Error("Unit number already exists in this property");
+    if (duplicate) throw new Error("Unit number already exists in this property");
 
-    return prisma.unit.create({
-      data: {
-        ...input,
-        propertyId,
-        rentAmount: input.rentAmount,
-      },
-    });
+    return prisma.unit.create({ data: { ...input, propertyId } });
   }
 
   async getUnits(
     organizationId: string,
     propertyId: string,
-    filters?: { status?: string }
+    query: ParsedQuery
   ) {
-    await this.verifyPropertyOwnership(organizationId, propertyId);
+    await this.resolveProperty(organizationId, propertyId);
 
-    return prisma.unit.findMany({
-      where: {
-        propertyId,
-        ...(filters?.status ? { status: filters.status as any } : {}),
-      },
-      include: {
-        floor: { select: { floorNumber: true, name: true } },
-        leases: {
-          where: { status: "ACTIVE" },
-          include: {
-            tenant: {
-              include: {
-                user: {
-                  select: { firstName: true, lastName: true, email: true, phone: true },
+    const where = { propertyId, ...query.where };
+
+    const [units, total] = await Promise.all([
+      prisma.unit.findMany({
+        where,
+        include: {
+          floor: { select: { floorNumber: true, name: true } },
+          leases: {
+            where: { status: "ACTIVE" },
+            include: {
+              tenant: {
+                include: {
+                  user: {
+                    select: {
+                      firstName: true,
+                      lastName: true,
+                      email: true,
+                      phone: true,
+                    },
+                  },
                 },
               },
             },
+            take: 1,
           },
-          take: 1,
         },
-      },
-      orderBy: { unitNumber: "asc" },
-    });
+        orderBy: query.orderBy,
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.unit.count({ where }),
+    ]);
+
+    return buildResponse(units, total, query);
   }
 
   async getUnitById(organizationId: string, unitId: string) {
     const unit = await prisma.unit.findFirst({
-      where: {
-        id: unitId,
-        property: { organizationId },
-      },
+      where: { id: unitId, property: { organizationId } },
       include: {
         property: { select: { id: true, name: true, address: true } },
         floor: true,
@@ -287,7 +386,12 @@ export class PropertyService {
             tenant: {
               include: {
                 user: {
-                  select: { firstName: true, lastName: true, email: true, phone: true },
+                  select: {
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    phone: true,
+                  },
                 },
               },
             },
@@ -307,25 +411,23 @@ export class PropertyService {
 
   async updateUnit(
     organizationId: string,
+    propertyId: string,
     unitId: string,
     input: UpdateUnitInput
   ) {
-    const unit = await prisma.unit.findFirst({
-      where: { id: unitId, property: { organizationId } },
-    });
-    if (!unit) throw new Error("Unit not found");
+    await this.resolveProperty(organizationId, propertyId);
 
-    return prisma.unit.update({
-      where: { id: unitId },
-      data: input,
-    });
+    const unit = await prisma.unit.findFirst({ where: { id: unitId, propertyId } });
+    if (!unit) throw new Error("Unit not found in this property");
+
+    return prisma.unit.update({ where: { id: unitId }, data: input });
   }
 
-  async deleteUnit(organizationId: string, unitId: string) {
-    const unit = await prisma.unit.findFirst({
-      where: { id: unitId, property: { organizationId } },
-    });
-    if (!unit) throw new Error("Unit not found");
+  async deleteUnit(organizationId: string, propertyId: string, unitId: string) {
+    await this.resolveProperty(organizationId, propertyId);
+
+    const unit = await prisma.unit.findFirst({ where: { id: unitId, propertyId } });
+    if (!unit) throw new Error("Unit not found in this property");
 
     const activeLeases = await prisma.lease.count({
       where: { unitId, status: "ACTIVE" },
@@ -336,37 +438,29 @@ export class PropertyService {
     return { message: "Unit deleted successfully" };
   }
 
-  async getVacancySummary(organizationId: string) {
-    const units = await prisma.unit.groupBy({
-      by: ["status"],
-      where: { property: { organizationId, isActive: true } },
-      _count: { status: true },
-    });
+  // ─── Private Resolvers ───────────────────────────
 
-    const summary = units.reduce(
-      (acc, item) => {
-        acc[item.status] = item._count.status;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
-
-    const total = Object.values(summary).reduce((a, b) => a + b, 0);
-    const occupied = summary["OCCUPIED"] ?? 0;
-    const occupancyRate = total > 0 ? Math.round((occupied / total) * 100) : 0;
-
-    return { summary, total, occupancyRate };
-  }
-
-  // ─── Private Helpers ────────────────────────────
-
-  private async verifyPropertyOwnership(
-    organizationId: string,
-    propertyId: string
-  ): Promise<void> {
+  private async resolveProperty(organizationId: string, propertyId: string) {
     const property = await prisma.property.findFirst({
       where: { id: propertyId, organizationId, isActive: true },
     });
     if (!property) throw new Error("Property not found");
+    return property;
+  }
+
+  private async resolveBuilding(propertyId: string, buildingId: string) {
+    const building = await prisma.building.findFirst({
+      where: { id: buildingId, propertyId },
+    });
+    if (!building) throw new Error("Building not found in this property");
+    return building;
+  }
+
+  private async resolveFloor(buildingId: string, floorId: string) {
+    const floor = await prisma.floor.findFirst({
+      where: { id: floorId, buildingId },
+    });
+    if (!floor) throw new Error("Floor not found in this building");
+    return floor;
   }
 }

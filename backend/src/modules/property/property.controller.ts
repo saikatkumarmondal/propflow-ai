@@ -1,9 +1,38 @@
 // backend/src/modules/property/property.controller.ts
 import { Request, Response } from "express";
 import { PropertyService } from "./property.service";
-import { sendSuccess, sendError } from "../../utils/response";
+import { sendSuccess } from "../../utils/response";
+import { parseQuery } from "../../utils/queryBuilder";
 
 const propertyService = new PropertyService();
+
+const PROPERTY_QUERY_OPTIONS = {
+  allowedFilters: ["type", "city", "country"],
+  allowedSortFields: ["name", "createdAt", "city"],
+  defaultSortField: "createdAt",
+  searchFields: ["name", "address", "city"],
+} as const;
+
+const BUILDING_QUERY_OPTIONS = {
+  allowedFilters: [],
+  allowedSortFields: ["name", "createdAt"],
+  defaultSortField: "name",
+  searchFields: ["name"],
+} as const;
+
+const FLOOR_QUERY_OPTIONS = {
+  allowedSortFields: ["floorNumber", "createdAt"],
+  defaultSortField: "floorNumber",
+  defaultSortOrder: "asc" as const,
+} as const;
+
+const UNIT_QUERY_OPTIONS = {
+  allowedFilters: ["status", "currency"],
+  allowedSortFields: ["unitNumber", "rentAmount", "createdAt"],
+  defaultSortField: "unitNumber",
+  defaultSortOrder: "asc" as const,
+  searchFields: ["unitNumber", "unitType"],
+} as const;
 
 export class PropertyController {
   // ─── Properties ─────────────────────────────────
@@ -18,7 +47,8 @@ export class PropertyController {
   }
 
   async getProperties(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.getProperties(req.user!.organizationId!);
+    const query = parseQuery(req, PROPERTY_QUERY_OPTIONS);
+    const result = await propertyService.getProperties(req.user!.organizationId!, query);
     sendSuccess(res, result);
   }
 
@@ -66,37 +96,64 @@ export class PropertyController {
   }
 
   async getBuildings(req: Request, res: Response): Promise<void> {
+    const query = parseQuery(req, BUILDING_QUERY_OPTIONS);
     const result = await propertyService.getBuildings(
       req.user!.organizationId!,
-      req.params.propertyId
+      req.params.propertyId,
+      query
     );
     sendSuccess(res, result);
   }
 
   async updateBuilding(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.updateBuilding(req.params.buildingId, req.body);
+    const result = await propertyService.updateBuilding(
+      req.user!.organizationId!,
+      req.params.propertyId,
+      req.params.buildingId,
+      req.body
+    );
     sendSuccess(res, result, "Building updated");
   }
 
   async deleteBuilding(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.deleteBuilding(req.params.buildingId);
+    const result = await propertyService.deleteBuilding(
+      req.user!.organizationId!,
+      req.params.propertyId,
+      req.params.buildingId
+    );
     sendSuccess(res, result);
   }
 
   // ─── Floors ─────────────────────────────────────
 
   async createFloor(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.createFloor(req.params.buildingId, req.body);
+    const result = await propertyService.createFloor(
+      req.user!.organizationId!,
+      req.params.propertyId,
+      req.params.buildingId,
+      req.body
+    );
     sendSuccess(res, result, "Floor created", 201);
   }
 
   async getFloors(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.getFloors(req.params.buildingId);
+    const query = parseQuery(req, FLOOR_QUERY_OPTIONS);
+    const result = await propertyService.getFloors(
+      req.user!.organizationId!,
+      req.params.propertyId,
+      req.params.buildingId,
+      query
+    );
     sendSuccess(res, result);
   }
 
   async deleteFloor(req: Request, res: Response): Promise<void> {
-    const result = await propertyService.deleteFloor(req.params.floorId);
+    const result = await propertyService.deleteFloor(
+      req.user!.organizationId!,
+      req.params.propertyId,
+      req.params.buildingId,
+      req.params.floorId
+    );
     sendSuccess(res, result);
   }
 
@@ -112,11 +169,11 @@ export class PropertyController {
   }
 
   async getUnits(req: Request, res: Response): Promise<void> {
-    const status = req.query.status as string | undefined;
+    const query = parseQuery(req, UNIT_QUERY_OPTIONS);
     const result = await propertyService.getUnits(
       req.user!.organizationId!,
       req.params.propertyId,
-      { status }
+      query
     );
     sendSuccess(res, result);
   }
@@ -132,6 +189,7 @@ export class PropertyController {
   async updateUnit(req: Request, res: Response): Promise<void> {
     const result = await propertyService.updateUnit(
       req.user!.organizationId!,
+      req.params.propertyId,
       req.params.unitId,
       req.body
     );
@@ -141,6 +199,7 @@ export class PropertyController {
   async deleteUnit(req: Request, res: Response): Promise<void> {
     const result = await propertyService.deleteUnit(
       req.user!.organizationId!,
+      req.params.propertyId,
       req.params.unitId
     );
     sendSuccess(res, result);

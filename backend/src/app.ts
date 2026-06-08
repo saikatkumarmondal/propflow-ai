@@ -1,6 +1,6 @@
 // backend/src/app.ts
 require("dotenv").config()
-
+import { globalErrorHandler } from "./middlewares/errorHandler";
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -17,6 +17,9 @@ import authRoutes from "./modules/auth/auth.routes";
 import organizationRoutes from "./modules/organization/organization.routes";
 import propertyRoutes from "./modules/property/property.routes";
 import userRoutes from "./modules/user/user.routes";
+import tenantRoutes from "./modules/tenant/tenant.routes";
+import leaseRoutes  from "./modules/lease/lease.routes";
+import { startLeaseExpiryJob } from "./jobs/leaseExpiry.job";
 const app = express();
 const httpServer = createServer(app);
 
@@ -33,6 +36,7 @@ app.use(helmet());
 app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use(globalErrorHandler);
 app.use(morgan(ENV.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(globalRateLimiter);
 
@@ -54,10 +58,14 @@ app.use(`${API_PREFIX}/organizations`, organizationRoutes);
 app.use(`${API_PREFIX}/properties`, propertyRoutes);
 app.use(`${API_PREFIX}/users`, userRoutes);
 
+app.use(`${API_PREFIX}/tenants`, tenantRoutes);
+app.use(`${API_PREFIX}/leases`,  leaseRoutes);
+
 // ─── 404 Handler ──────────────────────────────────
 app.use((req: Request, res: Response) => {
   sendError(res, `Route ${req.originalUrl} not found`, 404);
 });
+startLeaseExpiryJob();
 
 // ─── Global Error Handler (Express 5) ────────────
 // Express 5 automatically catches async errors — no need for express-async-errors
