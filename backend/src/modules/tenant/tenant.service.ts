@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { prisma } from "../../config/database";
 import { sendEmail } from "../../utils/email";
 import { ENV } from "../../config/env";
-import { parseQuery, buildResponse, ParsedQuery } from "../../utils/queryBuilder";
+import { buildResponse, ParsedQuery } from "../../utils/queryBuilder";
 import { createAuditLog } from "../../utils/auditLog";
 import { CreateTenantInput, UpdateTenantInput } from "./tenant.schema";
 
@@ -14,7 +14,7 @@ export class TenantService {
     actorId: string,
     input: CreateTenantInput
   ) {
-    // ── If userId provided, user already exists (invited earlier) ──
+    // ── If userId provided, user already exists ──
     if (input.userId) {
       const user = await prisma.user.findFirst({
         where: { id: input.userId, organizationId },
@@ -31,17 +31,13 @@ export class TenantService {
           userId: input.userId,
           organizationId,
           nidNumber: input.nidNumber,
-          emergencyContact: input.emergencyContact,
+          emergencyContact: input.emergencyContact ?? undefined,
         },
         include: {
           user: {
             select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-              phone: true,
-              role: true,
+              id: true, firstName: true, lastName: true,
+              email: true, phone: true, role: true,
             },
           },
         },
@@ -51,6 +47,10 @@ export class TenantService {
     }
 
     // ── Create new user + tenant together ──
+    if (!input.email) throw new Error("Email is required to create a new tenant");
+    if (!input.firstName) throw new Error("First name is required");
+    if (!input.lastName) throw new Error("Last name is required");
+
     const existingUser = await prisma.user.findUnique({
       where: { email: input.email },
     });
@@ -79,17 +79,13 @@ export class TenantService {
         userId: user.id,
         organizationId,
         nidNumber: input.nidNumber,
-        emergencyContact: input.emergencyContact,
+        emergencyContact: input.emergencyContact ?? undefined,
       },
       include: {
         user: {
           select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            role: true,
+            id: true, firstName: true, lastName: true,
+            email: true, phone: true, role: true,
           },
         },
       },
@@ -100,7 +96,7 @@ export class TenantService {
       to: user.email,
       subject: "Your PropFlow AI Tenant Account",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
           <h2>Welcome to PropFlow AI</h2>
           <p>Hi ${user.firstName}, your tenant account has been created.</p>
           <p>Temporary password: <strong>${tempPassword}</strong></p>
@@ -146,13 +142,8 @@ export class TenantService {
         include: {
           user: {
             select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-              phone: true,
-              avatar: true,
-              status: true,
+              id: true, firstName: true, lastName: true,
+              email: true, phone: true, avatar: true, status: true,
             },
           },
           leases: {
@@ -185,15 +176,9 @@ export class TenantService {
       include: {
         user: {
           select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            avatar: true,
-            status: true,
-            lastLoginAt: true,
-            createdAt: true,
+            id: true, firstName: true, lastName: true,
+            email: true, phone: true, avatar: true,
+            status: true, lastLoginAt: true, createdAt: true,
           },
         },
         leases: {
@@ -201,10 +186,8 @@ export class TenantService {
           include: {
             unit: {
               select: {
-                unitNumber: true,
-                unitType: true,
-                rentAmount: true,
-                currency: true,
+                unitNumber: true, unitType: true,
+                rentAmount: true, currency: true,
                 property: { select: { id: true, name: true, address: true } },
               },
             },
@@ -243,7 +226,13 @@ export class TenantService {
         : Promise.resolve(),
 
       Object.keys(tenantFields).length > 0
-        ? prisma.tenant.update({ where: { id: tenantId }, data: tenantFields })
+        ? prisma.tenant.update({
+            where: { id: tenantId },
+            data: {
+              ...tenantFields,
+              emergencyContact: tenantFields.emergencyContact ?? undefined,
+            },
+          })
         : Promise.resolve(),
     ]);
 

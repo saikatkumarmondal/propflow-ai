@@ -18,26 +18,22 @@ export class LeaseService {
     actorId: string,
     input: CreateLeaseInput
   ) {
-    // ── Validate tenant belongs to org ──
     const tenant = await prisma.tenant.findFirst({
       where: { id: input.tenantId, organizationId },
       include: { user: true },
     });
     if (!tenant) throw new Error("Tenant not found in this organization");
 
-    // ── Validate unit belongs to org ──
     const unit = await prisma.unit.findFirst({
       where: { id: input.unitId, property: { organizationId } },
       include: { property: true },
     });
     if (!unit) throw new Error("Unit not found in this organization");
 
-    // ── Unit must be vacant ──
     if (unit.status !== "VACANT") {
       throw new Error(`Unit is not available. Current status: ${unit.status}`);
     }
 
-    // ── No overlapping active lease on this unit ──
     const overlappingLease = await prisma.lease.findFirst({
       where: {
         unitId: input.unitId,
@@ -52,37 +48,36 @@ export class LeaseService {
     });
     if (overlappingLease) throw new Error("Unit already has an active lease for this period");
 
-    const [lease] = await prisma.$transaction([
-      prisma.lease.create({
-        data: {
-          tenantId:        input.tenantId,
-          unitId:          input.unitId,
-          startDate:       new Date(input.startDate),
-          endDate:         new Date(input.endDate),
-          rentAmount:      input.rentAmount,
-          securityDeposit: input.securityDeposit,
-          terms:           input.terms,
-          status:          "ACTIVE",
-        },
-        include: {
-          tenant: {
-            include: {
-              user: { select: { firstName: true, lastName: true, email: true } },
-            },
-          },
-          unit: {
-            select: {
-              unitNumber: true,
-              property: { select: { name: true, address: true } },
-            },
+    const lease = await prisma.lease.create({
+      data: {
+        tenantId:        input.tenantId,
+        unitId:          input.unitId,
+        startDate:       new Date(input.startDate),
+        endDate:         new Date(input.endDate),
+        rentAmount:      input.rentAmount,
+        securityDeposit: input.securityDeposit,
+        terms:           input.terms,
+        status:          "ACTIVE",
+      },
+      include: {
+        tenant: {
+          include: {
+            user: { select: { firstName: true, lastName: true, email: true } },
           },
         },
-      }),
-      prisma.unit.update({
-        where: { id: input.unitId },
-        data:  { status: "OCCUPIED" },
-      }),
-    ]);
+        unit: {
+          select: {
+            unitNumber: true,
+            property: { select: { name: true, address: true } },
+          },
+        },
+      },
+    });
+
+    await prisma.unit.update({
+      where: { id: input.unitId },
+      data:  { status: "OCCUPIED" },
+    });
 
     await createAuditLog({
       organizationId,
@@ -91,14 +86,13 @@ export class LeaseService {
       entity:   "Lease",
       entityId: lease.id,
       newValues: {
-        tenantId: input.tenantId,
-        unitId:   input.unitId,
+        tenantId:  input.tenantId,
+        unitId:    input.unitId,
         startDate: input.startDate,
         endDate:   input.endDate,
       },
     });
 
-    // ── Send lease confirmation email ──
     await sendEmail({
       to: lease.tenant.user.email,
       subject: "Lease Agreement Confirmed — PropFlow AI",
@@ -243,7 +237,7 @@ export class LeaseService {
       entity:   "Lease",
       entityId: leaseId,
       oldValues: { endDate: lease.endDate, rentAmount: Number(lease.rentAmount) },
-      newValues: { endDate: newEndDate,     rentAmount: input.rentAmount },
+      newValues: { endDate: newEndDate, rentAmount: input.rentAmount },
     });
 
     await sendEmail({
@@ -284,16 +278,15 @@ export class LeaseService {
     if (!lease) throw new Error("Lease not found");
     if (lease.status === "TERMINATED") throw new Error("Lease is already terminated");
 
-    await prisma.$transaction([
-      prisma.lease.update({
-        where: { id: leaseId },
-        data:  { status: "TERMINATED" },
-      }),
-      prisma.unit.update({
-        where: { id: lease.unitId },
-        data:  { status: "VACANT" },
-      }),
-    ]);
+    await prisma.lease.update({
+      where: { id: leaseId },
+      data:  { status: "TERMINATED" },
+    });
+
+    await prisma.unit.update({
+      where: { id: lease.unitId },
+      data:  { status: "VACANT" },
+    });
 
     await createAuditLog({
       organizationId,
@@ -347,10 +340,7 @@ export class LeaseService {
     });
   }
 
-  // ── Called by cron job ──
   async processLeaseExpiryAlerts(): Promise<void> {
-    const expiringLeases = await this.getExpiringLeases(""); // will filter below
-
     const allExpiringLeases = await prisma.lease.findMany({
       where: {
         status:  "ACTIVE",
@@ -377,7 +367,6 @@ export class LeaseService {
 
     for (const lease of allExpiringLeases) {
       const daysLeft = dayjs(lease.endDate).diff(dayjs(), "day");
-
       await sendEmail({
         to: lease.tenant.user.email,
         subject: `Lease Expiring in ${daysLeft} Days — PropFlow AI`,
@@ -395,7 +384,6 @@ export class LeaseService {
       });
     }
 
-    // ── Auto-expire overdue leases ──
     await prisma.lease.updateMany({
       where: {
         status:  "ACTIVE",

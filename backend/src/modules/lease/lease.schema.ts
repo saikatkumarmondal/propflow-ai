@@ -3,16 +3,20 @@ import { z } from "zod";
 
 export const createLeaseSchema = z.object({
   tenantId: z.string().uuid(),
-  unitId:   z.string().uuid(),
-  startDate: z.string().datetime(),
-  endDate:   z.string().datetime(),
+  unitId: z.string().uuid(),
+  startDate: z.coerce.date(),
+  endDate: z.coerce.date(),
   rentAmount: z.number().positive(),
   securityDeposit: z.number().min(0),
   terms: z.string().optional(),
 }).refine(
-  (data) => new Date(data.endDate) > new Date(data.startDate),
-  { message: "End date must be after start date", path: ["endDate"] }
+  (data) => data.endDate > data.startDate,
+  {
+    message: "End date must be after start date",
+    path: ["endDate"]
+  }
 );
+
 
 export const renewLeaseSchema = z.object({
   newEndDate: z.string().datetime(),

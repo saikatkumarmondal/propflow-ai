@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 // ─────────────────────────────────────────
 // ENUMS
@@ -282,7 +283,7 @@ model Tenant {
   userId         String   @unique
   nidNumber      String?
   nidDocument    String?
-  emergencyContact String?
+  emergencyContact Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

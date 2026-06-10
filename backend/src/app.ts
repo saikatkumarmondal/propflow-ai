@@ -1,6 +1,6 @@
 // backend/src/app.ts
 require("dotenv").config()
-import { globalErrorHandler } from "./middlewares/errorHandler";
+
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -11,6 +11,7 @@ import { Server } from "socket.io";
 import { ENV } from "./config/env";
 import { logger } from "./config/logger";
 import { globalRateLimiter } from "./middlewares/rateLimiter";
+import { globalErrorHandler } from "./middlewares/errorHandler";
 import { sendError } from "./utils/response";
 
 import authRoutes from "./modules/auth/auth.routes";
@@ -18,8 +19,11 @@ import organizationRoutes from "./modules/organization/organization.routes";
 import propertyRoutes from "./modules/property/property.routes";
 import userRoutes from "./modules/user/user.routes";
 import tenantRoutes from "./modules/tenant/tenant.routes";
-import leaseRoutes  from "./modules/lease/lease.routes";
+import leaseRoutes from "./modules/lease/lease.routes";
+import billingRoutes from "./modules/billing/billing.routes";
+import { startBillingJobs } from "./jobs/billing.job"
 import { startLeaseExpiryJob } from "./jobs/leaseExpiry.job";
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -36,7 +40,6 @@ app.use(helmet());
 app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(globalErrorHandler);
 app.use(morgan(ENV.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(globalRateLimiter);
 
@@ -54,43 +57,28 @@ app.get("/health", (_req: Request, res: Response) => {
 const API_PREFIX = "/api/v1";
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/organizations`, organizationRoutes);
-
 app.use(`${API_PREFIX}/properties`, propertyRoutes);
 app.use(`${API_PREFIX}/users`, userRoutes);
-
 app.use(`${API_PREFIX}/tenants`, tenantRoutes);
-app.use(`${API_PREFIX}/leases`,  leaseRoutes);
+app.use(`${API_PREFIX}/leases`, leaseRoutes);
 
 // ─── 404 Handler ──────────────────────────────────
 app.use((req: Request, res: Response) => {
   sendError(res, `Route ${req.originalUrl} not found`, 404);
 });
-startLeaseExpiryJob();
 
-// ─── Global Error Handler (Express 5) ────────────
-// Express 5 automatically catches async errors — no need for express-async-errors
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  logger.error(err.stack);
-  const status = (err as any).status || (err as any).statusCode || 500;
-  sendError(
-    res,
-    ENV.NODE_ENV === "production" ? "Internal server error" : err.message,
-    status
-  );
-});
+// ─── Global Error Handler ─────────────────────────
+app.use(globalErrorHandler);
 
 // ─── Socket.IO Events ─────────────────────────────
 io.on("connection", (socket) => {
   logger.info(`Socket connected: ${socket.id}`);
-
   socket.on("join:organization", (organizationId: string) => {
     socket.join(`org:${organizationId}`);
   });
-
   socket.on("join:user", (userId: string) => {
     socket.join(`user:${userId}`);
   });
-
   socket.on("disconnect", () => {
     logger.info(`Socket disconnected: ${socket.id}`);
   });
@@ -99,6 +87,12 @@ io.on("connection", (socket) => {
 // ─── Start Server ─────────────────────────────────
 httpServer.listen(ENV.PORT, () => {
   logger.info(`🚀 PropFlow AI server running on port ${ENV.PORT} [${ENV.NODE_ENV}]`);
+
+  // Start cron jobs AFTER server is ready
+  setTimeout(() => {
+    startLeaseExpiryJob();
+    startBillingJobs();
+  }, 5000);
 });
 
 export default app;
