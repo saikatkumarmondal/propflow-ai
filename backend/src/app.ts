@@ -13,6 +13,7 @@ import { logger } from "./config/logger";
 import { globalRateLimiter } from "./middlewares/rateLimiter";
 import { globalErrorHandler } from "./middlewares/errorHandler";
 import { sendError } from "./utils/response";
+import maintenanceRoutes from "./modules/maintenance/maintenance.routes";
 
 import authRoutes from "./modules/auth/auth.routes";
 import organizationRoutes from "./modules/organization/organization.routes";
@@ -20,7 +21,8 @@ import propertyRoutes from "./modules/property/property.routes";
 import userRoutes from "./modules/user/user.routes";
 import tenantRoutes from "./modules/tenant/tenant.routes";
 import leaseRoutes from "./modules/lease/lease.routes";
-import billingRoutes from "./modules/billing/billing.routes";
+import billingRoutes from "./modules/billing/billing.routes"; 
+import crmRoutes from "./modules/crm/crm.routes";
 import { startBillingJobs } from "./jobs/billing.job"
 import { startLeaseExpiryJob } from "./jobs/leaseExpiry.job";
 
@@ -61,7 +63,9 @@ app.use(`${API_PREFIX}/properties`, propertyRoutes);
 app.use(`${API_PREFIX}/users`, userRoutes);
 app.use(`${API_PREFIX}/tenants`, tenantRoutes);
 app.use(`${API_PREFIX}/leases`, leaseRoutes);
-
+app.use(`${API_PREFIX}/billing`, billingRoutes); 
+app.use(`${API_PREFIX}/maintenance`, maintenanceRoutes);
+app.use(`${API_PREFIX}/crm`, crmRoutes);
 // ─── 404 Handler ──────────────────────────────────
 app.use((req: Request, res: Response) => {
   sendError(res, `Route ${req.originalUrl} not found`, 404);
